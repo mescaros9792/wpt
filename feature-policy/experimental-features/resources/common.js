@@ -32,3 +32,36 @@ function onMessage(e) {
 }
 
 window.addEventListener("message", onMessage);
+
+
+
+// Waits for |load_timeout| before resolving the promise. It will resolve the
+// promise sooner if a message event with |e.data.id| of |id| is received.
+// If the promise is resolved with a timeout the response is |false|. Otherwise,
+// the response (argument passed on to the |then|) is the value of
+// |e.data.contents|.
+function waitForMessageOrTimeout(t, id, load_timeout) {
+  let callback = null, did_resolve = false;
+  function resolvePromise(e) {
+    if (e && e.data && e.data.id && e.data.id === id && !did_resolve) {
+      callback(e.data.contents);
+      window.removeEventListener("message", resolvePromise);
+    } else {
+      callback(false);
+    }
+    did_resolve = true;
+  }
+  t.step_timeout(resolvePromise, load_timeout);
+  window.addEventListener("message", resolvePromise);
+  return new Promise( (resolve) => {
+    callback = resolve;
+  });
+}
+
+function createIframe(container, attributes) {
+  var new_iframe = document.createElement("iframe");
+  for (attr_name in attributes)
+    new_iframe.setAttribute(attr_name, attributes[attr_name]);
+  container.appendChild(new_iframe);
+  return new_iframe;
+}
