@@ -1,0 +1,14 @@
+<!-- a.html -->
+<iframe id=f src=b1.html></iframe>
+<!-- <iframe id=f src=b2.html></iframe> -->
+<script>
+const frame = document.getElementById("f");
+frame.onload = () => {
+  const { addEventListenerToFirstWindow } = frame.contentWindow;
+  frame.onload = () => {
+    addEventListenerToFirstWindow("x", () => { console.log("sadness"); });
+    frame.contentWindow.dispatchEvent(new Event("x"));
+  };
+  frame.src = "c.html";
+};
+</script>
