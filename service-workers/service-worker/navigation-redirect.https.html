@@ -1,6 +1,11 @@
 <!DOCTYPE html>
 <title>Service Worker: Navigation redirection</title>
 <meta name="timeout" content="long">
+<!-- empty variant tests document.location and intercepted URLs -->
+<meta name="variant" content="">
+<!-- client variant tests the Clients API (resultingClientId and Client.url) -->
+<meta name="variant" content="?client">
+
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
 <script src="/common/get-host-info.sub.js"></script>
@@ -76,17 +81,84 @@ async function check_all_intercepted_urls(expected_urls) {
   assert_object_equals(urls, expected_urls, 'Intercepted URLs should match.');
 }
 
+// Checks |clients| returned from a worker. Only the client named 'x' should
+// be found. Returns true if a client was found. Note that 'x' is not
+// necessarily found by this worker, if the client is cross-origin.
+//
+// |clients| is an object like:
+// {x: {found: true, id: id1, url: url1}, b: {found: false}}
+function check_clients(clients, expected_id, expected_url, worker_name) {
+  let found = false;
+  Object.keys(clients).forEach(key => {
+    const info = clients[key];
+    if (info.found) {
+      // Only x should be found.
+      assert_equals(key, 'x', `${worker_name} client key`);
+
+      assert_equals(info.id, expected_id, `${worker_name} client id`);
+      assert_equals(info.url, expected_url, `${worker_name} client url`);
+      found = true;
+    }
+  });
+  return found;
+}
+
+function check_resulting_client_ids(infos, expected_infos, actual_ids, worker) {
+  assert_equals(infos.length, expected_infos.length,
+                `request length for ${worker}`);
+  for (var i = 0; i < infos.length; i++) {
+    const key = expected_infos[i].resultingClientId;
+    const url = expected_infos[i].url;
+    const actual_id = infos[i].resultingClientId;
+    const expected_id = actual_ids[key];
+    assert_equals(typeof(actual_id), 'string',
+                  `resultingClientId for ${url} request to ${worker}`);
+    if (expected_id) {
+      assert_equals(requestInfos[0], expected_id,
+                    `resultingClientId for ${url}`);
+    } else {
+      actual_ids[key] = actual_id;
+    }
+  }
+}
+
 // Creates an iframe and navigates to |url|, which is expected to start a chain
 // of redirects.
 // - |expected_last_url| is the expected window.location after the
 //   navigation.
 // - |expected_request_infos| is the expected requests that the service workers
 //   were dispatched fetch events for. The format is:
-//   [
-//     [{url: url1}, {url: url2}], // requests from workers[0],
-//     [{url: url1},               // requests from workers[1],
-//     [{url: url1}, {url: url2}]  // requests from cross-origin worker
-//   ]
+//  [
+//    [
+//      // Requests received by workers[0].
+//      {url: url1, resultingClientId: 'a'},
+//      {url: url2, resultingClientId: 'a'}
+//    ],
+//    [
+//      // Requests received by workers[1].
+//      {url: url3, resultingClientId: 'a'}
+//    ],
+//    [
+//      // Requests received by the cross-origin worker.
+//      {url: url4, resultingClientId: 'x'}
+//      {url: url5, resultingClientId: 'x'}
+//    ]
+//  ]
+//
+// In this example:
+// - workers[0] receives two requests with the same resultingClientId.
+// - workers[1] receives one request also with that resultingClientId.
+// - The cross-origin worker receives two requests with the same
+//   resultingClientId which differs from the previous one.
+// - The final client after the navigation has the id represented by 'x'.
+//
+// |url| is |event.request.url| and |resultingClientId| represents
+// |event.resultingClientId|. Since the actual client ids are not known
+// beforehand, the expectation isn't the literal expected value, but all equal
+// expected ids must map to the same actual id. The expected value 'x'
+// additionally carries the special meaning that a client with that id is
+// expected to exist after the navigation.
+
 function redirect_test(url,
                        expected_last_url,
                        expected_request_infos,
@@ -99,8 +171,77 @@ function redirect_test(url,
     const frame = await with_iframe(url);
     t.add_cleanup(() => { frame.remove(); });
 
-    const expected_intercepted_urls = expected_request_infos.map(requests => {
-      return requests.map(info => {
+    // The "client" variant tests the Clients API using resultingClientId.
+    if (document.location.search == '?client') {
+      // Request infos is an array like:
+      // [
+      //   [{url: url1, resultingClientId: id1}],
+      //   [{url: url2, resultingClientId: id1}],
+      //   [{url: url3: resultingClientId: id2}]
+      // ]
+      const requestInfos = await get_all_request_infos();
+
+      // We check the actual infos against the expected ones, and learn the
+      // actual ids as we go.
+      const actual_ids = {};
+      check_resulting_client_ids(requestInfos[0],
+                                 expected_request_infos[0],
+                                 actual_ids,
+                                 'worker0');
+      check_resulting_client_ids(requestInfos[1],
+                                 expected_request_infos[1],
+                                 actual_ids,
+                                 'worker1');
+      check_resulting_client_ids(requestInfos[2],
+                                 expected_request_infos[2],
+                                 actual_ids,
+                                 'crossOriginWorker');
+
+      // Now |actual_ids| is like:
+      // {x: id1, b: id2, c: id3}
+      // Ask each worker to try to resolve the actual ids to clients.
+      // Only 'x' should resolve to a client.
+      const client_infos = await get_all_clients(actual_ids);
+
+      // Client infos is an object like:
+      // {
+      //   worker0: {x: {found: true, id: id1, url: url1}, b: {found: false}},
+      //   worker1: {x: {found: true, id: id1, url: url1}},
+      //   crossOriginWorker: {x: {found: false}}, {b: {found: false}}
+      // }
+      //
+      // Now check that only 'x' was found, and its id and url should match the
+      // expectation.
+      let found = false;
+      const expect_found = actual_ids.hasOwnProperty('x');
+      const expected_id = actual_ids['x'];
+      found = check_clients(client_infos.worker0,
+                            expected_id,
+                            expected_last_url,
+                            'worker0');
+      found = check_clients(client_infos.worker1,
+                            expected_id,
+                            expected_last_url,
+                            'worker1') || found;
+      found = check_clients(client_infos.crossOriginWorker,
+                            expected_id,
+                            expected_last_url,
+                            'crossOriginWorker') || found;
+      assert_equals(found, expect_found, 'client found');
+
+      if (!expect_found) {
+        // TODO(falken): Ask the other origin frame if it has a client of the
+        // expected URL.
+      }
+
+      return;
+    }
+
+    // The default variant tests the request interception chain and
+    // resulting document.location.
+    const expected_intercepted_urls = expected_request_infos.map(
+        requests_for_worker => {
+      return requests_for_worker.map(info => {
         return info.url;
       });
     });
@@ -120,7 +261,9 @@ function on_message(e) {
   }
   var resolve = message_resolvers[e.data.id];
   delete message_resolvers[e.data.id];
-  resolve(e.data.result);
+  if (resolve) {
+    resolve(e.data.result);
+  }
 }
 
 function send_to_iframe(frame, message) {
@@ -133,6 +276,27 @@ function send_to_iframe(frame, message) {
   });
 }
 
+async function get_all_clients(actual_ids) {
+  const client_infos = {};
+  client_infos['worker0'] = await get_clients(workers[0], actual_ids);
+  client_infos['worker1'] = await get_clients(workers[1], actual_ids);
+  client_infos['crossOriginWorker'] =
+      await send_to_iframe(other_origin_frame,
+                           {command: 'get_clients', actual_ids});
+  return client_infos;
+}
+
+function get_clients(worker, actual_ids) {
+  return new Promise(resolve => {
+    var channel = new MessageChannel();
+    channel.port1.onmessage = (msg) => {
+      resolve(msg.data.clients);
+    };
+    worker.postMessage({command: 'getClients', actual_ids, port: channel.port2},
+                       [channel.port2]);
+  });
+}
+
 // Returns an array of the URLs that |worker| received fetch events for:
 //   [url1, url2]
 async function get_intercepted_urls(worker) {
@@ -142,7 +306,10 @@ async function get_intercepted_urls(worker) {
 
 // Returns the requests that |worker| received fetch events for. The return
 // value is an array of format:
-//   [{url: url1}, {url: url2}]
+// [
+//   {url: url1, resultingClientId: id},
+//   {url: url2, resultingClientId: id}
+// ]
 function get_request_infos(worker) {
   return new Promise(resolve => {
     var channel = new MessageChannel();
@@ -154,6 +321,29 @@ function get_request_infos(worker) {
   });
 }
 
+// Returns an array of the requests the workers received fetch events for:
+// [
+//   // Requests from workers[0].
+//   [
+//     {url: url1, resultingClientId: id},
+//     {url: url2, resultingClientId: id}
+//   ],
+//
+//   // Requests from workers[1].
+//   [{url: url2, resultingClientId: id1}],
+//
+//   // Requests from the cross-origin worker.
+//   []
+// ]
+async function get_all_request_infos()  {
+  const request_infos = [];
+  request_infos.push(await get_request_infos(workers[0]));
+  request_infos.push(await get_request_infos(workers[1]));
+  request_infos.push(await send_to_iframe(other_origin_frame,
+                                          {command: 'get_request_infos'}));
+  return request_infos;
+}
+
 let url;
 let url1;
 let url2;
@@ -163,7 +353,7 @@ url = SCOPE1;
 redirect_test(
     OUT_SCOPE + 'url=' + encodeURIComponent(url),
     url,
-    [[{url}], [], []],
+    [[{url, resultingClientId: 'x'}], [], []],
     'Normal redirect to same-origin scope.');
 
 
@@ -171,30 +361,29 @@ url = SCOPE1 + '#ref';
 redirect_test(
     OUT_SCOPE + 'url=' + encodeURIComponent(SCOPE1) + '#ref',
     url,
-    [[{url}], [], []],
+    [[{url, resultingClientId: 'x'}], [], []],
     'Normal redirect to same-origin scope with a hash fragment.');
 
 url = SCOPE1 + '#ref2';
 redirect_test(
     OUT_SCOPE + 'url=' + encodeURIComponent(url) + '#ref',
     url,
-    [[{url}], [], []],
+    [[{url, resultingClientId: 'x'}], [], []],
     'Normal redirect to same-origin scope with different hash fragments.');
 
 url = OTHER_ORIGIN_SCOPE;
 redirect_test(
     OUT_SCOPE + 'url=' + encodeURIComponent(url),
     url,
-    [[], [], [{url}]],
+    [[], [], [{url, resultingClientId: 'x'}]],
     'Normal redirect to other-origin scope.');
-
 
 // SW fallbacked redirect. SW doesn't handle the fetch request.
 url = SCOPE1 + 'url=' + encodeURIComponent(OUT_SCOPE);
 redirect_test(
     url,
     OUT_SCOPE,
-    [[{url}], [], []],
+    [[{url, resultingClientId: 'x'}], [], []],
     'SW-fallbacked redirect to same-origin out-scope.');
 
 url1 = SCOPE1 + 'url=' + encodeURIComponent(SCOPE1);
@@ -202,7 +391,14 @@ url2 = SCOPE1;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}, {url: url2}], [], []],
+    [
+      [
+        {url: url1, resultingClientId: 'x'},
+        {url: url2, resultingClientId: 'x'}
+      ],
+      [],
+      []
+    ],
     'SW-fallbacked redirect to same-origin same-scope.');
 
 url1 = SCOPE1 + 'url=' + encodeURIComponent(SCOPE1) + '#ref';
@@ -210,7 +406,14 @@ url2 = SCOPE1 + '#ref';
 redirect_test(
     url1,
     url2,
-    [[{url: url1}, {url: url2}], [], []],
+    [
+      [
+        {url: url1, resultingClientId: 'x'},
+        {url: url2, resultingClientId: 'x'}
+      ],
+      [],
+      []
+    ],
     'SW-fallbacked redirect to same-origin same-scope with a hash fragment.');
 
 url1 = SCOPE1 + 'url=' + encodeURIComponent(SCOPE1 + '#ref2') + '#ref';
@@ -218,7 +421,14 @@ url2 = SCOPE1 + '#ref2';
 redirect_test(
     url1,
     url2,
-    [[{url: url1}, {url: url2}], [], []],
+    [
+      [
+        {url: url1, resultingClientId: 'x'},
+        {url: url2, resultingClientId: 'x'}
+      ],
+      [],
+      []
+    ],
     'SW-fallbacked redirect to same-origin same-scope with different hash ' +
     'fragments.');
 
@@ -227,7 +437,11 @@ url2 = SCOPE2;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [{url: url2}], []],
+    [
+      [{url: url1, resultingClientId: 'x'}],
+      [{url: url2, resultingClientId: 'x'}],
+      []
+    ],
     'SW-fallbacked redirect to same-origin other-scope.');
 
 url1 = SCOPE1 + 'url=' + encodeURIComponent(OTHER_ORIGIN_OUT_SCOPE);
@@ -235,7 +449,7 @@ url2 = OTHER_ORIGIN_OUT_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'a'}], [], []],
     'SW-fallbacked redirect to other-origin out-scope.');
 
 url1 = SCOPE1 + 'url=' + encodeURIComponent(OTHER_ORIGIN_SCOPE);
@@ -243,7 +457,11 @@ url2 = OTHER_ORIGIN_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], [{url: url2}]],
+    [
+      [{url: url1, resultingClientId: 'a'}],
+      [],
+      [{url: url2, resultingClientId: 'x'}]
+    ],
     'SW-fallbacked redirect to other-origin in-scope.');
 
 
@@ -254,7 +472,7 @@ url2 = OUT_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'a'}], [], []],
     'SW-generated redirect to same-origin out-scope.');
 
 url1 = SCOPE1 + 'sw=gen&url=' + encodeURIComponent(OUT_SCOPE) + '#ref';
@@ -262,7 +480,7 @@ url2 = OUT_SCOPE + '#ref';
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'x'}], [], []],
     'SW-generated redirect to same-origin out-scope with a hash fragment.');
 
 url1 = SCOPE1 + 'sw=gen&url=' + encodeURIComponent(OUT_SCOPE + '#ref2') + '#ref';
@@ -270,7 +488,7 @@ url2 = OUT_SCOPE + '#ref2';
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'x'}], [], []],
     'SW-generated redirect to same-origin out-scope with different hash ' +
     'fragments.');
 
@@ -279,7 +497,14 @@ url2 = SCOPE1;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}, {url: url2}], [], []],
+    [
+      [
+        {url: url1, resultingClientId: 'x'},
+        {url: url2, resultingClientId: 'x'}
+      ],
+      [],
+      []
+    ],
     'SW-generated redirect to same-origin same-scope.');
 
 url1 = SCOPE1 + 'sw=gen&url=' + encodeURIComponent(SCOPE2);
@@ -287,7 +512,11 @@ url2 = SCOPE2;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [{url: url2}], []],
+    [
+      [{url: url1, resultingClientId: 'x'}],
+      [{url: url2, resultingClientId: 'x'}],
+      []
+    ],
     'SW-generated redirect to same-origin other-scope.');
 
 url1 = SCOPE1 + 'sw=gen&url=' + encodeURIComponent(OTHER_ORIGIN_OUT_SCOPE);
@@ -295,7 +524,7 @@ url2 = OTHER_ORIGIN_OUT_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'a'}], [], []],
     'SW-generated redirect to other-origin out-scope.');
 
 url1 = SCOPE1 + 'sw=gen&url=' + encodeURIComponent(OTHER_ORIGIN_SCOPE);
@@ -304,9 +533,9 @@ redirect_test(
     url1,
     url2,
     [
-      [{url: url1}],
+      [{url: url1, resultingClientId: 'a'}],
       [],
-      [{url: url2}]
+      [{url: url2, resultingClientId: 'x'}]
     ],
     'SW-generated redirect to other-origin in-scope.');
 
@@ -318,7 +547,7 @@ url2 = OUT_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'x'}], [], []],
     'SW-fetched redirect to same-origin out-scope.');
 
 url1 = SCOPE1 + 'sw=fetch&url=' + encodeURIComponent(SCOPE1);
@@ -326,7 +555,14 @@ url2 = SCOPE1;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}, {url: url2}], [], []],
+    [
+      [
+        {url: url1, resultingClientId: 'x'},
+        {url: url2, resultingClientId: 'x'}
+      ],
+      [],
+      []
+    ],
     'SW-fetched redirect to same-origin same-scope.');
 
 url1 = SCOPE1 + 'sw=fetch&url=' + encodeURIComponent(SCOPE2);
@@ -335,8 +571,8 @@ redirect_test(
     url1,
     url2,
     [
-      [{url: url1}],
-      [{url: url2}],
+      [{url: url1, resultingClientId: 'x'}],
+      [{url: url2, resultingClientId: 'x'}],
       []
     ],
     'SW-fetched redirect to same-origin other-scope.');
@@ -346,7 +582,7 @@ url2 = OTHER_ORIGIN_OUT_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'a'}], [], []],
     'SW-fetched redirect to other-origin out-scope.');
 
 url1 = SCOPE1 + 'sw=fetch&url=' + encodeURIComponent(OTHER_ORIGIN_SCOPE);
@@ -355,9 +591,9 @@ redirect_test(
     url1,
     url2,
     [
-      [{url: url1}],
+      [{url: url1, resultingClientId: 'a'}],
       [],
-      [{url: url2}]
+      [{url: url2, resultingClientId: 'x'}]
     ],
     'SW-fetched redirect to other-origin in-scope.');
 
@@ -370,7 +606,7 @@ url2 = OUT_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'x'}], [], []],
     'Redirect to same-origin out-scope with opaque redirect response.');
 
 url1 = SCOPE1 + 'sw=manual&url=' + encodeURIComponent(SCOPE1);
@@ -378,7 +614,14 @@ url2 = SCOPE1;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}, {url: url2}], [], []],
+    [
+      [
+        {url: url1, resultingClientId: 'x'},
+        {url: url2, resultingClientId: 'x'}
+      ],
+      [],
+      []
+    ],
     'Redirect to same-origin same-scope with opaque redirect response.');
 
 url1 = SCOPE1 + 'sw=manual&url=' + encodeURIComponent(SCOPE2);
@@ -386,7 +629,11 @@ url2 = SCOPE2;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [{url: url2}], []],
+    [
+      [{url: url1, resultingClientId: 'x'}],
+      [{url: url2, resultingClientId: 'x'}],
+      []
+    ],
     'Redirect to same-origin other-scope with opaque redirect response.');
 
 url1 = SCOPE1 + 'sw=manual&url=' + encodeURIComponent(OTHER_ORIGIN_OUT_SCOPE);
@@ -394,7 +641,7 @@ url2 = OTHER_ORIGIN_OUT_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'a'}], [], []],
     'Redirect to other-origin out-scope with opaque redirect response.');
 
 url1 = SCOPE1 + 'sw=manual&url=' + encodeURIComponent(OTHER_ORIGIN_SCOPE);
@@ -402,12 +649,16 @@ url2 = OTHER_ORIGIN_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], [{url: url2}]],
+    [
+      [{url: url1, resultingClientId: 'a'}],
+      [],
+      [{url: url2, resultingClientId: 'x'}]
+    ],
     'Redirect to other-origin in-scope with opaque redirect response.');
 
 url= SCOPE1 + 'sw=manual&noLocationRedirect';
 redirect_test(
-    url, url, [[{url}], [], []],
+    url, url, [[{url, resultingClientId: 'x'}], [], []],
     'No location redirect response.');
 
 
@@ -418,7 +669,7 @@ url2 = OUT_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'x'}], [], []],
     'Redirect to same-origin out-scope with opaque redirect response which ' +
     'is passed through Cache.');
 
@@ -428,7 +679,10 @@ redirect_test(
     url1,
     url2,
     [
-      [{url: url1}, {url: url2}],
+      [
+        {url: url1, resultingClientId: 'x'},
+        {url: url2, resultingClientId: 'x'}
+      ],
       [],
       []
     ],
@@ -441,8 +695,8 @@ redirect_test(
     url1,
     url2,
     [
-      [{url: url1}],
-      [{url: url2}],
+      [{url: url1, resultingClientId: 'x'}],
+      [{url: url2, resultingClientId: 'x'}],
       []
     ],
     'Redirect to same-origin other-scope with opaque redirect response which ' +
@@ -454,7 +708,7 @@ url2 = OTHER_ORIGIN_OUT_SCOPE;
 redirect_test(
     url1,
     url2,
-    [[{url: url1}], [], []],
+    [[{url: url1, resultingClientId: 'a'}], [], []],
     'Redirect to other-origin out-scope with opaque redirect response which ' +
     'is passed through Cache.');
 
@@ -465,9 +719,9 @@ redirect_test(
     url1,
     url2,
     [
-      [{url: url1}],
+      [{url: url1, resultingClientId: 'a'}],
       [],
-      [{url: url2}],
+      [{url: url2, resultingClientId: 'x'}],
     ],
     'Redirect to other-origin in-scope with opaque redirect response which ' +
     'is passed through Cache.');
@@ -476,7 +730,7 @@ url = SCOPE1 + 'sw=manualThroughCache&noLocationRedirect';
 redirect_test(
     url,
     url,
-    [[{url}], [], []],
+    [[{url, resultingClientId: 'x'}], [], []],
     'No location redirect response via Cache.');
 
 // Clean up the test environment. This promise_test() needs to be the last one.
