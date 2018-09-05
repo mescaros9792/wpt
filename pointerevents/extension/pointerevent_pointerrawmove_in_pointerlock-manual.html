@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+    <head>
+        <title>pointerrawmove</title>
+        <meta name="viewport" content="width=device-width">
+        <link rel="stylesheet" type="text/css" href="../pointerevent_styles.css">
+        <script src="/resources/testharness.js"></script>
+        <script src="/resources/testharnessreport.js"></script>
+        <!-- Additional helper script for common checks across event types -->
+        <script type="text/javascript" src="../pointerevent_support.js"></script>
+    </head>
+    <body onload="run()">
+        <h2>pointerrawmove</h2>
+        <h4>Test Description: This test checks if pointerrawmove is dispatched correctly while in pointerlock mode. </h4>
+        <p>Click in the box (and accept the pointerlock permission if asked).</p>
+        <p>Move your mouse.</p>
+        <div id="target0"></div>
+        <script>
+            var test_pointerrawmove = async_test("pointerrawmove event received");
+
+            var pointerrawmoveReceived = false;
+
+            function run() {
+                var target0 = document.getElementById("target0");
+
+                on_event(document, "pointerlockchange", function(event) {
+                  if (document.pointerLockElement == target0) {
+                    on_event(target0, "pointerrawmove", function (event) {
+                      pointerrawmoveReceived = true;
+                    });
+                    on_event(target0, "pointermove", function (event) {
+                      test_pointerrawmove.step(function() {
+                        assert_true(pointerrawmoveReceived,
+                                    "Pointerrawmove event should have been received before pointermove while in pointerlock mode.");
+                      }, "Pointerrawmove event should have been received before pointermove while in pointerlock mode.");
+                      test_pointerrawmove.done();
+                    });
+                  }
+                });
+                on_event(target0, "click", function(event) {
+                  target0.requestPointerLock();
+                });
+            }
+
+        </script>
+        <div id="complete-notice">
+        </div>
+    </body>
+</html>
