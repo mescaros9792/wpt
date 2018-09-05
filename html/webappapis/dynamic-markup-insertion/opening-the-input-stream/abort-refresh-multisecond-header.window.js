@@ -43,20 +43,17 @@ async_test(t => {
   const frame = document.body.appendChild(document.createElement("iframe"));
   t.add_cleanup(() => frame.remove());
   frame.onload = t.step_func(() => {
-    console.log("loaded");
     frame.onload = null;
     let happened = false;
     const img = frame.contentDocument.createElement("img");
     img.src = new URL("resources/slow-png.py", document.URL);
     img.onload = t.step_func_done(() => {
-      console.log("image loaded");
       assert_true(happened);
     });
     img.onerror = t.unreached_func("Image loading should not have errored");
     // The image fetch starts in a microtask, so let's be sure to test after
     // the fetch has started.
     t.step_timeout(() => {
-      console.log("document.open() called");
       frame.contentDocument.open();
       happened = true;
     });
