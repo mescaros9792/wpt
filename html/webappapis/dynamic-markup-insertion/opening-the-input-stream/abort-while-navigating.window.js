@@ -178,6 +178,10 @@ async_test(t => {
   });
 }, "document.open() aborts documents that are queued for navigation through .click() (image loading)");
 
+// The following tests deal with the <meta http-equiv=refresh> pragma and the
+// `Refresh` header. The spec is still hazy on the precise behavior in those
+// cases but we use https://github.com/whatwg/html/issues/4003 as a guideline.
+
 async_test(t => {
   const frame = document.body.appendChild(document.createElement("iframe"));
   t.add_cleanup(() => frame.remove());
