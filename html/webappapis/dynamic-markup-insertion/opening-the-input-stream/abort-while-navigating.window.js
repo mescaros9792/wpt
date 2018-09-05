@@ -33,6 +33,8 @@ async_test(t => {
   });
 }, "document.open() aborts documents that are navigating through Location (fetch())");
 
+// We cannot test for img element's error event for this test, as Firefox does
+// not fire the event if the fetch is aborted while Chrome does.
 async_test(t => {
   const frame = document.body.appendChild(document.createElement("iframe"));
   t.add_cleanup(() => frame.remove());
@@ -42,7 +44,7 @@ async_test(t => {
     let happened = false;
     const img = frame.contentDocument.createElement("img");
     img.src = new URL("resources/slow-png.py", document.URL);
-    img.onload = t.unreached_func("Image loading should have errored");
+    img.onload = t.unreached_func("Image loading should not have succeeded");
     // The image fetch starts in a microtask, so let's be sure to test after
     // the fetch has started.
     t.step_timeout(() => {
@@ -81,8 +83,12 @@ async_test(t => {
   frame.contentDocument.open();
 }, "document.open() aborts documents that are navigating through iframe loading (fetch())");
 
-// We use resources/slow.py here, to prevent the situation where when
-// document.open() is called the initial document has already become inactive.
+// We cannot test for img element's error event for this test, as Firefox does
+// not fire the event if the fetch is aborted while Chrome does.
+//
+// We use resources/slow.py here as the source of the iframe, to prevent the
+// situation where when document.open() is called the initial about:blank
+// document has already become inactive.
 async_test(t => {
   const div = document.body.appendChild(document.createElement("div"));
   t.add_cleanup(() => div.remove());
@@ -91,7 +97,7 @@ async_test(t => {
   let happened = false;
   const img = frame.contentDocument.createElement("img");
   img.src = new URL("resources/slow-png.py", document.URL);
-  img.onload = t.unreached_func("Image loading should have errored");
+  img.onload = t.unreached_func("Image loading should not have succeeded");
   // The image fetch starts in a microtask, so let's be sure to test after
   // the fetch has started.
   t.step_timeout(() => {
@@ -142,6 +148,8 @@ async_test(t => {
   });
 }, "document.open() aborts documents that are queued for navigation through .click() (fetch())");
 
+// We cannot test for img element's error event for this test, as Firefox does
+// not fire the event if the fetch is aborted while Chrome does.
 async_test(t => {
   const frame = document.body.appendChild(document.createElement("iframe"));
   t.add_cleanup(() => frame.remove());
@@ -154,7 +162,7 @@ async_test(t => {
     let happened = false;
     const img = frame.contentDocument.createElement("img");
     img.src = new URL("resources/slow-png.py", document.URL);
-    img.onload = t.unreached_func("Image loading should have errored");
+    img.onload = t.unreached_func("Image loading should not have succeeded");
     // The image fetch starts in a microtask, so let's be sure to test after
     // the fetch has started.
     t.step_timeout(() => {
